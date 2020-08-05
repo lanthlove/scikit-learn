@@ -1,22 +1,21 @@
 """ Test the graphical_lasso module.
 """
 import sys
+import pytest
 
 import numpy as np
 from scipy import linalg
 
-from sklearn.utils.testing import assert_array_almost_equal
-from sklearn.utils.testing import assert_array_less
-from sklearn.utils.testing import assert_warns_message
+from numpy.testing import assert_allclose
+from sklearn.utils._testing import assert_array_almost_equal
+from sklearn.utils._testing import assert_array_less
 
 from sklearn.covariance import (graphical_lasso, GraphicalLasso,
                                 GraphicalLassoCV, empirical_covariance)
-from sklearn.datasets.samples_generator import make_sparse_spd_matrix
-from sklearn.externals.six.moves import StringIO
+from sklearn.datasets import make_sparse_spd_matrix
+from io import StringIO
 from sklearn.utils import check_random_state
 from sklearn import datasets
-
-from numpy.testing import assert_equal
 
 
 def test_graphical_lasso(random_state=0):
@@ -65,20 +64,19 @@ def test_graphical_lasso(random_state=0):
 
 def test_graphical_lasso_iris():
     # Hard-coded solution from R glasso package for alpha=1.0
-    # The iris datasets in R and scikit-learn do not match in a few places,
-    # these values are for the scikit-learn version.
+    # (need to set penalize.diagonal to FALSE)
     cov_R = np.array([
-        [0.68112222, 0.0, 0.2651911, 0.02467558],
-        [0.00, 0.1867507, 0.0, 0.00],
-        [0.26519111, 0.0, 3.0924249, 0.28774489],
-        [0.02467558, 0.0, 0.2877449, 0.57853156]
-    ])
+        [0.68112222, 0.0000000, 0.265820, 0.02464314],
+        [0.00000000, 0.1887129, 0.000000, 0.00000000],
+        [0.26582000, 0.0000000, 3.095503, 0.28697200],
+        [0.02464314, 0.0000000, 0.286972, 0.57713289]
+        ])
     icov_R = np.array([
-        [1.5188780, 0.0, -0.1302515, 0.0],
-        [0.0, 5.354733, 0.0, 0.0],
-        [-0.1302515, 0.0, 0.3502322, -0.1686399],
-        [0.0, 0.0, -0.1686399, 1.8123908]
-    ])
+        [1.5190747, 0.000000, -0.1304475, 0.0000000],
+        [0.0000000, 5.299055, 0.0000000, 0.0000000],
+        [-0.1304475, 0.000000, 0.3498624, -0.1683946],
+        [0.0000000, 0.000000, -0.1683946, 1.8164353]
+        ])
     X = datasets.load_iris().data
     emp_cov = empirical_covariance(X)
     for method in ('cd', 'lars'):
@@ -86,6 +84,23 @@ def test_graphical_lasso_iris():
                                     mode=method)
         assert_array_almost_equal(cov, cov_R)
         assert_array_almost_equal(icov, icov_R)
+
+
+def test_graph_lasso_2D():
+    # Hard-coded solution from Python skggm package
+    # obtained by calling `quic(emp_cov, lam=.1, tol=1e-8)`
+    cov_skggm = np.array([[3.09550269, 1.186972],
+                         [1.186972, 0.57713289]])
+
+    icov_skggm = np.array([[1.52836773, -3.14334831],
+                          [-3.14334831,  8.19753385]])
+    X = datasets.load_iris().data[:, 2:]
+    emp_cov = empirical_covariance(X)
+    for method in ('cd', 'lars'):
+        cov, icov = graphical_lasso(emp_cov, alpha=.1, return_costs=False,
+                                    mode=method)
+        assert_array_almost_equal(cov, cov_skggm)
+        assert_array_almost_equal(icov, icov_skggm)
 
 
 def test_graphical_lasso_iris_singular():
@@ -137,21 +152,59 @@ def test_graphical_lasso_cv(random_state=1):
     GraphicalLassoCV(alphas=[0.8, 0.5], tol=1e-1, n_jobs=1).fit(X)
 
 
-def test_deprecated_grid_scores(random_state=1):
-    dim = 5
-    n_samples = 6
-    random_state = check_random_state(random_state)
-    prec = make_sparse_spd_matrix(dim, alpha=.96,
-                                  random_state=random_state)
-    cov = linalg.inv(prec)
-    X = random_state.multivariate_normal(np.zeros(dim), cov, size=n_samples)
-    graphical_lasso = GraphicalLassoCV(alphas=[0.8, 0.5], tol=1e-1, n_jobs=1)
-    graphical_lasso.fit(X)
+# TODO: Remove in 0.26 when grid_scores_ is deprecated
+def test_graphical_lasso_cv_grid_scores_and_cv_alphas_deprecated():
+    splits = 4
+    n_alphas = 5
+    n_refinements = 3
+    true_cov = np.array([[0.8, 0.0, 0.2, 0.0],
+                         [0.0, 0.4, 0.0, 0.0],
+                         [0.2, 0.0, 0.3, 0.1],
+                         [0.0, 0.0, 0.1, 0.7]])
+    rng = np.random.RandomState(0)
+    X = rng.multivariate_normal(mean=[0, 0, 0, 0], cov=true_cov, size=200)
+    cov = GraphicalLassoCV(cv=splits, alphas=n_alphas,
+                           n_refinements=n_refinements).fit(X)
 
-    depr_message = ("Attribute grid_scores was deprecated in version "
-                    "0.19 and will be removed in 0.21. Use "
-                    "``grid_scores_`` instead")
+    total_alphas = n_refinements * n_alphas + 1
+    msg = (r"The grid_scores_ attribute is deprecated in version 0\.24 in "
+           r"favor of cv_results_ and will be removed in version 0\.26")
+    with pytest.warns(FutureWarning, match=msg):
+        assert cov.grid_scores_.shape == (total_alphas, splits)
 
-    assert_warns_message(DeprecationWarning, depr_message,
-                         lambda: graphical_lasso.grid_scores)
-    assert_equal(graphical_lasso.grid_scores, graphical_lasso.grid_scores_)
+    msg = (r"The cv_alphas_ attribute is deprecated in version 0\.24 in "
+           r"favor of cv_results_\['alpha'\] and will be removed in version "
+           r"0\.26")
+    with pytest.warns(FutureWarning, match=msg):
+        assert len(cov.cv_alphas_) == total_alphas
+
+
+def test_graphical_lasso_cv_scores():
+    splits = 4
+    n_alphas = 5
+    n_refinements = 3
+    true_cov = np.array([[0.8, 0.0, 0.2, 0.0],
+                         [0.0, 0.4, 0.0, 0.0],
+                         [0.2, 0.0, 0.3, 0.1],
+                         [0.0, 0.0, 0.1, 0.7]])
+    rng = np.random.RandomState(0)
+    X = rng.multivariate_normal(mean=[0, 0, 0, 0], cov=true_cov, size=200)
+    cov = GraphicalLassoCV(cv=splits, alphas=n_alphas,
+                           n_refinements=n_refinements).fit(X)
+
+    cv_results = cov.cv_results_
+    # alpha and one for each split
+
+    total_alphas = n_refinements * n_alphas + 1
+    keys = ['alphas']
+    split_keys = ['split{}_score'.format(i) for i in range(splits)]
+    for key in keys + split_keys:
+        assert key in cv_results
+        assert len(cv_results[key]) == total_alphas
+
+    cv_scores = np.asarray([cov.cv_results_[key] for key in split_keys])
+    expected_mean = cv_scores.mean(axis=0)
+    expected_std = cv_scores.std(axis=0)
+
+    assert_allclose(cov.cv_results_["mean_score"], expected_mean)
+    assert_allclose(cov.cv_results_["std_score"], expected_std)
